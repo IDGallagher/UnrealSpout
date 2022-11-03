@@ -4,7 +4,7 @@
 
 #include "Modules/ModuleManager.h"
 
-class FSpout2Module : public IModuleInterface
+class FUnrealSpoutModule : public IModuleInterface
 {
 public:
 

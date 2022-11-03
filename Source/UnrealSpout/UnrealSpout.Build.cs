@@ -3,7 +3,7 @@
 using UnrealBuildTool;
 using System.IO;
 
-public class Spout2 : ModuleRules
+public class UnrealSpout : ModuleRules
 {
 	private string ModulePath
 	{
@@ -50,7 +50,7 @@ public class Spout2 : ModuleRules
 		return FullExistingPath;
 	}
 
-	public Spout2(ReadOnlyTargetRules Target) : base(Target)
+	public UnrealSpout(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 		
