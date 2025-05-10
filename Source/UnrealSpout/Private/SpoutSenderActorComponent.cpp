@@ -11,6 +11,9 @@
 #include "Spout.h"
 #include "Windows/HideWindowsPlatformTypes.h"
 
+#include "RenderCore.h"         // FRHIBatchedShaderParameters helpers
+#include "ShaderParameterUtils.h"  // SetSRVParameter
+
 static std::map<std::string, int> sender_name_reference_countor;
 
 struct USpoutSenderActorComponent::SpoutSenderContext
@@ -30,12 +33,12 @@ struct USpoutSenderActorComponent::SpoutSenderContext
 	ID3D11Texture2D* sendingTexture = nullptr;
 	ID3D11DeviceContext* deviceContext = nullptr;
 
-	FRHITexture2D* Texture2D = nullptr;
+	FRHITexture* Texture;
 
 	SpoutSenderContext(const FName& Name,
-		FRHITexture2D* Texture2D)
+		FRHITexture* Texture)
 		: Name(Name)
-		, Texture2D(Texture2D)
+		, Texture(Texture)
 	{
 		DXGI_FORMAT texFormat;
 		FString RHIName = GDynamicRHI->GetName();
@@ -45,7 +48,7 @@ struct USpoutSenderActorComponent::SpoutSenderContext
 			D3D11Device = static_cast<ID3D11Device*>(GDynamicRHI->RHIGetNativeDevice());
 			D3D11Device->GetImmediateContext(&deviceContext);
 
-			ID3D11Texture2D* NativeTex = (ID3D11Texture2D*)Texture2D->GetNativeResource();
+			ID3D11Texture2D* NativeTex = (ID3D11Texture2D*)Texture->GetNativeResource();
 
 			D3D11_TEXTURE2D_DESC desc;
 			NativeTex->GetDesc(&desc);
@@ -76,7 +79,7 @@ struct USpoutSenderActorComponent::SpoutSenderContext
 			verify(D3D11Device->QueryInterface(__uuidof(ID3D11On12Device), (void**)&D3D11on12Device) == S_OK);
 
 			D3D12_RESOURCE_DESC desc;
-			ID3D12Resource* NativeTex = (ID3D12Resource*)Texture2D->GetNativeResource();
+			ID3D12Resource* NativeTex = (ID3D12Resource*)Texture->GetNativeResource();
 			desc = NativeTex->GetDesc();
 
 			width = desc.Width;
@@ -91,7 +94,6 @@ struct USpoutSenderActorComponent::SpoutSenderContext
 				D3D12_RESOURCE_STATE_COPY_SOURCE,
 				D3D12_RESOURCE_STATE_PRESENT, __uuidof(ID3D11Resource),
 				(void**)&WrappedDX11Resource) == S_OK);
-
 		}
 		else
 		{
@@ -162,7 +164,7 @@ struct USpoutSenderActorComponent::SpoutSenderContext
 		if (RHIName == TEXT("D3D11"))
 		{
 			ENQUEUE_RENDER_COMMAND(SpoutSenderRenderThreadOp)([this](FRHICommandListImmediate& RHICmdList) {
-				ID3D11Texture2D* NativeTex = (ID3D11Texture2D*)Texture2D->GetNativeResource();
+				ID3D11Texture2D* NativeTex = (ID3D11Texture2D*)Texture->GetNativeResource();
 
 				this->deviceContext->CopyResource(sendingTexture, NativeTex);
 				this->deviceContext->Flush();
@@ -220,14 +222,14 @@ void USpoutSenderActorComponent::TickComponent(float DeltaTime, ELevelTick TickT
 	if (!OutputTexture
 		|| !OutputTexture->GetResource()->TextureRHI) return;
 
-	auto Texture2D = OutputTexture->GetResource()->TextureRHI->GetTexture2D();
-	if (!Texture2D)
+	FRHITexture* Texture = OutputTexture->GetResource()->TextureRHI.GetReference();
+	if (!Texture)
 	{
 		context.Reset();
 		return;
 	}
 
-	if (!Texture2D->GetNativeResource())
+	if (!Texture->GetNativeResource())
 	{
 		context.Reset();
 		return;
@@ -235,7 +237,7 @@ void USpoutSenderActorComponent::TickComponent(float DeltaTime, ELevelTick TickT
 
 	if (!context.IsValid())
 	{
-		context = TSharedPtr<SpoutSenderContext>(new SpoutSenderContext(PublishName, Texture2D));
+		context = TSharedPtr<SpoutSenderContext>(new SpoutSenderContext(PublishName, Texture));
 	}
 	else if (PublishName != context->GetName())
 	{

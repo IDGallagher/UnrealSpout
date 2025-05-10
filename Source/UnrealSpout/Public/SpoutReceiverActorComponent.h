@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine.h"
 #include "Components/ActorComponent.h"
+#include "RHIResources.h"
 
 #include "SpoutReceiverActorComponent.generated.h"
 
@@ -16,8 +17,12 @@ class UNREALSPOUT_API USpoutReceiverActorComponent : public UActorComponent
 	struct SpoutReceiverContext;
 	TSharedPtr<SpoutReceiverContext> context;
 
+	/** Temporary RT used to receive the shared texture (sized and re-created on demand) */
 	UPROPERTY()
-	UTexture2D* IntermediateTexture2D = nullptr;
+	UTextureRenderTarget2D* IntermediateTextureResource = nullptr;
+
+	/** Cached SRV for the RT above – reused every frame to avoid re-allocating */
+	FShaderResourceViewRHIRef IntermediateTextureParameterSRV;
 
 	void Tick_RenderThread(FRHICommandListImmediate& RHICmdList, void* hSharehandle, FTextureRenderTargetResource* OutputRenderTargetResource);
 

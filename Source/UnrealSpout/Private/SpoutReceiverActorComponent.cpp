@@ -15,7 +15,16 @@
 #include "RHIUtilities.h"
 #include "MediaShaders.h"
 
+#include "RHI.h"
+#include "RHIResources.h"          // RHICreateShaderResourceView
+#include "RHIStaticStates.h"
+#include "ShaderParameterUtils.h"  // SetShaderResourceViewParameter
+#include "RenderCore.h"         // FRHIBatchedShaderParameters helpers
+
+
 static spoutSenderNames senders;
+/** Helper to open shared handles without duplicating code */
+static spoutDirectX spoutdx;
 
 class FTextureCopyVertexShader : public FGlobalShader
 {
@@ -83,7 +92,7 @@ struct USpoutReceiverActorComponent::SpoutReceiverContext
 	unsigned int width = 0, height = 0;
 	DXGI_FORMAT dwFormat = DXGI_FORMAT_UNKNOWN;
 	EPixelFormat format = PF_Unknown;
-	FRHITexture2D* Texture2D;
+	FRHITexture* Texture;
 
 	ID3D11Device* D3D11Device = nullptr;
 	ID3D11DeviceContext* Context = nullptr;
@@ -92,11 +101,11 @@ struct USpoutReceiverActorComponent::SpoutReceiverContext
 	ID3D11On12Device* D3D11on12Device = nullptr;
 	ID3D11Resource* WrappedDX11Resource = nullptr;
 
-	SpoutReceiverContext(unsigned int width, unsigned int height, DXGI_FORMAT dwFormat, FRHITexture2D* Texture2D)
+	SpoutReceiverContext(unsigned int width, unsigned int height, DXGI_FORMAT dwFormat, FRHITexture* Texture)
 		: width(width)
 		, height(height)
 		, dwFormat(dwFormat)
-		, Texture2D(Texture2D)
+		, Texture(Texture)
 	{
 		if (dwFormat == DXGI_FORMAT_B8G8R8A8_UNORM)
 			format = PF_B8G8R8A8;
@@ -132,7 +141,7 @@ struct USpoutReceiverActorComponent::SpoutReceiverContext
 
 			verify(D3D11Device->QueryInterface(__uuidof(ID3D11On12Device), (void**)&D3D11on12Device) == S_OK);
 			
-			ID3D12Resource* NativeTex = (ID3D12Resource*)Texture2D->GetNativeResource();
+			ID3D12Resource* NativeTex = (ID3D12Resource*)Texture->GetNativeResource();
 
 			D3D11_RESOURCE_FLAGS rf11 = {};
 
@@ -188,7 +197,7 @@ struct USpoutReceiverActorComponent::SpoutReceiverContext
 
 		if (RHIName == TEXT("D3D11"))
 		{
-			ID3D11Texture2D* NativeTex = (ID3D11Texture2D*)Texture2D->GetNativeResource();
+			ID3D11Texture2D* NativeTex = (ID3D11Texture2D*)Texture->GetNativeResource();
 
 			Context->CopyResource(NativeTex, SrcTexture);
 			Context->Flush();
@@ -248,123 +257,56 @@ void USpoutReceiverActorComponent::TickComponent(float DeltaTime, ELevelTick Tic
 		format = PF_A32B32G32R32F;
 
 	if (!find_sender
-		|| format == PF_Unknown)
+		|| !hSharehandle
+		|| format == PF_Unknown
+		|| width == 0
+		|| height == 0)
 		return;
 
+	if (!this->IntermediateTextureResource)
 	{
-		if (!IntermediateTexture2D
-			|| IntermediateTexture2D->GetSizeX() != width
-			|| IntermediateTexture2D->GetSizeY() != height
-			|| IntermediateTexture2D->GetPixelFormat() != format)
-		{
-			IntermediateTexture2D = UTexture2D::CreateTransient(width, height, format, FName("SpoutIntermediate"));
-			IntermediateTexture2D->UpdateResource();
-
-			context = nullptr;
-		}
-
-		ENQUEUE_RENDER_COMMAND(SpoutReceiverRenderThreadOp)([this, hSharehandle, width, height, dwFormat, format](FRHICommandListImmediate& RHICmdList) {
-			check(IsInRenderingThread());
-
-			if (!OutputRenderTarget || !IntermediateTexture2D)
-				return;
-
-			FTextureRenderTargetResource* OutputRenderTargetResource = OutputRenderTarget->GetRenderTargetResource();
-
-			if (!context)
-			{
-				const FTextureResource* IntermediateTextureResource = IntermediateTexture2D->GetResource();
-				check(IntermediateTextureResource);
-				check(IntermediateTextureResource->TextureRHI);
-			
-				FTexture2DRHIRef IntermediateTextureRef = IntermediateTextureResource->TextureRHI->GetTexture2D();
-				check(IntermediateTextureRef);
-			
-				context = TSharedPtr<SpoutReceiverContext>(new SpoutReceiverContext(width, height, dwFormat, IntermediateTextureRef));
-			}
-
-			this->Tick_RenderThread(RHICmdList, hSharehandle, OutputRenderTargetResource);
-		});
-	}
-}
-
-void USpoutReceiverActorComponent::Tick_RenderThread(
-	FRHICommandListImmediate& RHICmdList,
-	void* hSharehandle,
-	FTextureRenderTargetResource* OutputRenderTargetResource
-)
-{
-	check(IsInRenderingThread());
-
-	SCOPED_DRAW_EVENT(RHICmdList, ProcessSpoutCopyTexture);
-
-	if (!GWorld || !GWorld->Scene || !context) return;
-
-	ID3D11Resource* SrcTexture = nullptr;
-	verify(context->D3D11Device->OpenSharedResource(hSharehandle, __uuidof(ID3D11Resource), (void**)(&SrcTexture)) == S_OK);
-	check(SrcTexture);
-
-	context->CopyResource(SrcTexture);
-	SrcTexture->Release();
-
-	FShaderResourceViewRHIRef IntermediateTextureParameterSRV;
-
-	{
-		auto Resource = IntermediateTexture2D->GetResource();
-		auto ParamRef = (Resource->TextureRHI.GetReference());
-		IntermediateTextureParameterSRV = RHICreateShaderResourceView(ParamRef, 0);
-		check(IntermediateTextureParameterSRV.IsValid());
+		this->IntermediateTextureResource = NewObject<UTextureRenderTarget2D>(this);
+		this->IntermediateTextureResource->InitCustomFormat(width, height, format, false);
+		this->IntermediateTextureResource->UpdateResourceImmediate(false);
 	}
 
+	FRHITexture* IntermediateRHI = IntermediateTextureResource->GetResource()->TextureRHI.GetReference();
+	if (!IntermediateRHI) return;
+
+	if (!context.IsValid())
 	{
-		auto ShaderResource = OutputRenderTargetResource->GetRenderTargetTexture(); 
-		
-		FRHIRenderPassInfo RPInfo(
-			ShaderResource,
-			ERenderTargetActions::DontLoad_Store);
+		context = TSharedPtr<SpoutReceiverContext>(new SpoutReceiverContext(width, height, dwFormat, IntermediateRHI));
+	}
 
-		RHICmdList.BeginRenderPass(RPInfo, TEXT("CopySpoutImage"));
+	ID3D11Texture2D* SharedTex = nullptr;
+	verify(spoutdx.OpenDX11shareHandle(context->D3D11Device, &SharedTex, hSharehandle));
+	context->CopyResource(SharedTex);
+	SharedTex->Release();
+
+	ENQUEUE_RENDER_COMMAND(SpoutReceiverRenderThreadOp)(
+		[IntermediateRHI, this](FRHICommandListImmediate& RHICmdList) {
+		if (!GWorld || !IntermediateRHI) return;
+
+		FRHIRenderPassInfo RPInfo(IntermediateRHI, ERenderTargetActions::DontLoad_Store);
+		RHICmdList.BeginRenderPass(RPInfo, TEXT("SpoutReceiver"));
+
+		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+		TShaderMapRef<FMediaShadersVS> VertexShader(GlobalShaderMap);
+		TShaderMapRef<FTextureCopyPixelShader> PixelShader(GlobalShaderMap);
+
+		FRHITextureSRVCreateInfo SRVDesc{};
+		IntermediateTextureParameterSRV = RHICmdList.CreateShaderResourceView(IntermediateRHI, SRVDesc);
+
+		if (PixelShader->SrcTexture.IsBound())
 		{
-			FIntPoint OutputSize(
-				OutputRenderTargetResource->GetSizeX(), OutputRenderTargetResource->GetSizeY());
-
-			auto* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-			TShaderMapRef<FMediaShadersVS> VertexShader(GlobalShaderMap);
-			TShaderMapRef<FTextureCopyPixelShader> PixelShader(GlobalShaderMap);
-
-			// Set the graphic pipeline state.
-			FGraphicsPipelineStateInitializer GraphicsPSOInit;
-			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Never>::GetRHI();
-			GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-			GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-			GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
-			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GMediaVertexDeclaration.VertexDeclarationRHI;
-			
-#if (ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION >= 25) || (ENGINE_MAJOR_VERSION == 5)
-			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-#else ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION <= 24
-			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-#endif
-
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit,
-				0, EApplyRendertargetOption::CheckApply, true);
-
-			if (PixelShader->SrcTexture.IsBound())
-			{
-				auto PixelShaderRHI = GraphicsPSOInit.BoundShaderState.PixelShaderRHI;
-				RHICmdList.SetShaderResourceViewParameter(PixelShaderRHI, PixelShader->SrcTexture.GetBaseIndex(), IntermediateTextureParameterSRV);
-			}
-			
-			FBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
-			RHICmdList.SetStreamSource(0, VertexBuffer, 0);
-			RHICmdList.SetViewport(0, 0, 0.0, OutputSize.X, OutputSize.Y, 1.f);
-			RHICmdList.DrawPrimitive(0, 2, 1);
+			FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+			SetSRVParameter(BatchedParameters, PixelShader->SrcTexture, IntermediateTextureParameterSRV);
+			RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
 		}
+
 		RHICmdList.EndRenderPass();
 
-		RHICmdList.CopyToResolveTarget(ShaderResource, ShaderResource, FResolveParams());
-	}
+		FRHICopyTextureInfo CopyInfo{};
+		RHICmdList.CopyTexture(IntermediateRHI, IntermediateRHI, CopyInfo);
+	});
 }
