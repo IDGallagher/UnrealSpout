@@ -5,7 +5,12 @@
 #include "CoreMinimal.h"
 #include "Engine.h"
 #include "Components/ActorComponent.h"
+#include "RHIResources.h"
+#include "RHI.h"
 #include "SpoutSenderActorComponent.generated.h"
+
+// Forward-declare to avoid pulling heavy headers in most translation units
+struct ID3D11Texture2D;
 
 UCLASS( ClassGroup=(Custom), DisplayName="Spout Sender", meta=(BlueprintSpawnableComponent) )
 class UNREALSPOUT_API USpoutSenderActorComponent : public UActorComponent
@@ -18,6 +23,16 @@ class UNREALSPOUT_API USpoutSenderActorComponent : public UActorComponent
 public:	
 	// Sets default values for this component's properties
 	USpoutSenderActorComponent();
+
+	/** Access the native texture that Spout broadcasts to. */
+	ID3D11Texture2D* GetSharedDX11Texture() const;
+
+	/** Same texture wrapped as an RHI resource for RDG. Created on-demand. */
+	FTextureRHIRef GetSharedTextureRHI();
+
+private:
+	mutable ID3D11Texture2D* CachedDX11 = nullptr;
+	mutable FTextureRHIRef CachedRHI;
 
 protected:
 	// Called when the game starts

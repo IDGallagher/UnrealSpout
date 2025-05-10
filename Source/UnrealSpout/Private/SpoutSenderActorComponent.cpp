@@ -14,6 +14,10 @@
 #include "RenderCore.h"         // FRHIBatchedShaderParameters helpers
 #include "ShaderParameterUtils.h"  // SetSRVParameter
 
+#include "RHI.h"            // for FRHITexture & GetNativeResource()
+#include "RenderResource.h"
+#include "RenderUtils.h"
+
 static std::map<std::string, int> sender_name_reference_countor;
 
 struct USpoutSenderActorComponent::SpoutSenderContext
@@ -48,7 +52,9 @@ struct USpoutSenderActorComponent::SpoutSenderContext
 			D3D11Device = static_cast<ID3D11Device*>(GDynamicRHI->RHIGetNativeDevice());
 			D3D11Device->GetImmediateContext(&deviceContext);
 
-			ID3D11Texture2D* NativeTex = (ID3D11Texture2D*)Texture->GetNativeResource();
+			ID3D11Texture2D* NativeTex = static_cast<ID3D11Texture2D*>(Texture->GetNativeResource());
+			if (!NativeTex)
+				return;
 
 			D3D11_TEXTURE2D_DESC desc;
 			NativeTex->GetDesc(&desc);
@@ -79,7 +85,9 @@ struct USpoutSenderActorComponent::SpoutSenderContext
 			verify(D3D11Device->QueryInterface(__uuidof(ID3D11On12Device), (void**)&D3D11on12Device) == S_OK);
 
 			D3D12_RESOURCE_DESC desc;
-			ID3D12Resource* NativeTex = (ID3D12Resource*)Texture->GetNativeResource();
+			ID3D12Resource* NativeTex = static_cast<ID3D12Resource*>(Texture->GetNativeResource());
+			if (!NativeTex)
+				return;
 			desc = NativeTex->GetDesc();
 
 			width = desc.Width;
@@ -164,7 +172,9 @@ struct USpoutSenderActorComponent::SpoutSenderContext
 		if (RHIName == TEXT("D3D11"))
 		{
 			ENQUEUE_RENDER_COMMAND(SpoutSenderRenderThreadOp)([this](FRHICommandListImmediate& RHICmdList) {
-				ID3D11Texture2D* NativeTex = (ID3D11Texture2D*)Texture->GetNativeResource();
+				ID3D11Texture2D* NativeTex = static_cast<ID3D11Texture2D*>(Texture->GetNativeResource());
+				if (!NativeTex)
+					return;
 
 				this->deviceContext->CopyResource(sendingTexture, NativeTex);
 				this->deviceContext->Flush();
@@ -246,5 +256,59 @@ void USpoutSenderActorComponent::TickComponent(float DeltaTime, ELevelTick TickT
 	}
 
 	context->Tick();
+}
+
+// --- Spout integration helpers ------------------------------------------------
+ID3D11Texture2D* USpoutSenderActorComponent::GetSharedDX11Texture() const
+{
+    // If we cached the pointer earlier and the context is still valid, just reuse it
+    if (CachedDX11 && context.IsValid())
+    {
+        return CachedDX11;
+    }
+
+    // We only have the texture once the sender context is up and running
+    if (!context.IsValid())
+    {
+        return nullptr;
+    }
+
+    CachedDX11 = context->sendingTexture;   // public struct member, no extra copy needed
+    return CachedDX11;
+}
+
+FTextureRHIRef USpoutSenderActorComponent::GetSharedTextureRHI()
+{
+    // Re-use the RHI texture once it has been created.
+    if (CachedRHI.IsValid())
+        return CachedRHI;
+
+    // Native DX11 texture supplied by Spout.
+    ID3D11Texture2D* Native = GetSharedDX11Texture();
+    if (!Native)
+        return nullptr;
+
+    // Query width/height/format so we can describe the UE resource.
+    D3D11_TEXTURE2D_DESC D;
+    Native->GetDesc(&D);
+
+    // Map DXGI format → UE pixel format (handle the two we actually use).
+    EPixelFormat Format = PF_B8G8R8A8;
+    if (D.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)      Format = PF_FloatRGBA;
+    else if (D.Format == DXGI_FORMAT_R32G32B32A32_FLOAT) Format = PF_A32B32G32R32F;
+
+    // Build the FRHI texture description – EXTERNAL flag is critical.
+    const FRHITextureCreateDesc Desc =
+        FRHITextureCreateDesc::Create2D(TEXT("SpoutShared"))
+        .SetExtent(static_cast<int32>(D.Width), static_cast<int32>(D.Height))
+        .SetFormat(Format)
+        .SetNumMips(1)
+        .SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::External)
+        .SetInitialState(ERHIAccess::CopyDest)
+        // Store the native pointer in ExtData – this is UE 5.5's hook for external resources.
+        .SetExtData(static_cast<uint32>(reinterpret_cast<uint64>(Native)));
+
+    CachedRHI = RHICreateTexture(Desc);
+    return CachedRHI;
 }
 

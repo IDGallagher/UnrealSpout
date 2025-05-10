@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "SceneViewExtension.h"
+#include "SpoutCopyViewExtension.h"
 #include "ViewportSpoutSender.generated.h"
 
 class USceneCaptureComponent2D;
@@ -19,6 +21,9 @@ class UNREALSPOUT_API AViewportSpoutSender : public AActor
 
 public:
    AViewportSpoutSender();
+
+   UTextureRenderTarget2D* GetCaptureRenderTarget() const { return ViewRT; }
+   USpoutSenderActorComponent* GetSpoutSender() const { return SpoutSender; }
 
 protected:
    virtual void BeginPlay() override;
@@ -50,4 +55,6 @@ private:
 
    int32 LastW = 0;
    int32 LastH = 0;
+
+   TSharedPtr<FSpoutCopyViewExtension, ESPMode::ThreadSafe> ViewExt;
 }; 

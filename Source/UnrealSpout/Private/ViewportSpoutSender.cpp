@@ -16,8 +16,6 @@ AViewportSpoutSender::AViewportSpoutSender()
    SceneCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("SceneCapture"));
    SceneCapture->SetupAttachment(Root);
    SceneCapture->CaptureSource     = ESceneCaptureSource::SCS_FinalColorHDR;
-   SceneCapture->bCaptureOnMovement = false;   // we control when to capture
-   SceneCapture->bCaptureEveryFrame = false;
 
    SpoutSender = CreateDefaultSubobject<USpoutSenderActorComponent>(TEXT("SpoutSender"));
 }
@@ -27,12 +25,18 @@ void AViewportSpoutSender::BeginPlay()
    Super::BeginPlay();
    ValidateOrCreateRT();
    SceneCapture->bCaptureEveryFrame = true;
+   SceneCapture->bCaptureOnMovement = true;
    SpoutSender->PublishName  = PublishName;
    SpoutSender->OutputTexture = ViewRT;
+   if (!ViewExt.IsValid())
+   {
+       ViewExt = FSceneViewExtensions::NewExtension<FSpoutCopyViewExtension>(this);
+   }
 }
 
 void AViewportSpoutSender::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+   ViewExt.Reset();
    if (ViewRT)
    {
       ViewRT->ConditionalBeginDestroy();
