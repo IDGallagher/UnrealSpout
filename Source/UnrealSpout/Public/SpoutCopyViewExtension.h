@@ -6,6 +6,7 @@
 #include "RenderGraphUtils.h"
 
 class AViewportSpoutSender;
+class FSceneTextureUniformParameters;
 
 /**
  * Copies the ViewportSpoutSender's render-target into Spout's shared texture
@@ -27,8 +28,15 @@ public:
     virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext&) const override { return true; }
 
     /* -------- Copy pass -------- */
-    virtual void PostRenderBasePass_RenderThread(FRHICommandListImmediate& RHICmdList,
-                                                 FSceneView& View) override;
+    virtual void PostRenderBasePassDeferred_RenderThread(
+        FRDGBuilder& GraphBuilder,
+        FSceneView& InView,
+        const FRenderTargetBindingSlots& RenderTargets,
+        TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextures) override;
+
+    virtual void PostRenderBasePassMobile_RenderThread(
+        FRHICommandList& RHICmdList,
+        FSceneView& InView) override;
 
 private:
     AViewportSpoutSender* Owner = nullptr;
