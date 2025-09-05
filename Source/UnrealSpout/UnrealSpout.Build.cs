@@ -111,6 +111,9 @@ public class UnrealSpout : ModuleRules
 			System.Console.WriteLine("Using Spout DLL: " + binariesPath);
 			RuntimeDependencies.Add(binariesPath);
 
+			// Stage Spout.dll next to the packaged executable
+			RuntimeDependencies.Add("$(TargetOutputDir)/Spout.dll", pluginDLLPath);
+
 			// Delay-load the DLL, so we can load it from the right place first
 			PublicDelayLoadDLLs.Add(Path.Combine(ThirdPartyPath, "Spout/lib", PlatformString, "Spout.dll"));
 		}
